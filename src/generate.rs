@@ -8,14 +8,19 @@ use ark_poly::{
     UVPolynomial,
 };
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use std::ops::{Mul, Neg};
+use std::ops::{Mul, Neg, Div};
 
+/// Conversion from integer to finite field element
 pub fn scalar(n: u64) -> Fr {
     Fr::from(n)
 }
 
+/// Produces constants that are needed for polynomial
+/// commitment protocol.  
+/// Produces a "domain" which is used for polynomial
+/// interpolation.
 pub fn setup(
-    vectors: Vec<Vec<Fr>>,
+    vectors: &Vec<Fr>,
 ) -> (
     Vec<G1Affine>,
     G2Affine,
@@ -41,6 +46,9 @@ pub fn setup(
     (kzg_setup, h.into_affine(), beta_h.into_affine(), domain)
 }
 
+/// Given a polynomial and the setup constants, computes
+/// the KZG commitment to that polynomial.  This commitment
+/// is encoded in a single elliptic curve point.
 pub fn commit(p: &DensePolynomial<Fr>, setup: &Vec<G1Affine>) -> G1Affine {
     p.coeffs()
         .iter()
@@ -50,17 +58,22 @@ pub fn commit(p: &DensePolynomial<Fr>, setup: &Vec<G1Affine>) -> G1Affine {
         .into_affine()
 }
 
+/// Given a vector of finite field elements, computes the 
+/// interpolation polynomial.  Recall this is the polynomial
+/// whose first n values are precisely the elements in the 
+/// values vector.
 pub fn interpolate(
-    coefficients: &Vec<Fr>,
+    values: &Vec<Fr>,
     domain: &GeneralEvaluationDomain<Fr>,
 ) -> DensePolynomial<Fr> {
-    DensePolynomial::from_coefficients_vec(domain.ifft(coefficients))
+    DensePolynomial::from_coefficients_vec(domain.ifft(values))
 }
 
 pub fn evaluate(poly: &DensePolynomial<Fr>, eval: &Fr) -> Fr {
     poly.evaluate(eval)
 }
 
+/// Produces evidence that `poly` evaluates to ?
 pub fn open(poly: &DensePolynomial<Fr>, eval: &Fr, setup: &Vec<G1Affine>) -> G1Affine {
     // Compute witness poly
     let divisor = DensePolynomial::from_coefficients_vec(vec![eval.neg(), Fr::one()]);
@@ -70,6 +83,20 @@ pub fn open(poly: &DensePolynomial<Fr>, eval: &Fr, setup: &Vec<G1Affine>) -> G1A
     commit(&witness_poly, setup)
 }
 
+/// Produces evidence of `poly` evaluation at `eval`
+pub fn open_alternate(poly: &DensePolynomial<Fr>, eval: &Fr, setup: &Vec<G1Affine>) -> G1Affine {
+    // Compute witness poly
+    let divisor = DensePolynomial::from_coefficients_vec(vec![eval.neg(), Fr::one()]);
+    let value = DensePolynomial::from_coefficients_vec(vec![evaluate(poly, eval)]);
+    let witness_poly = (poly.clone() + value.neg()).div(&divisor);
+
+    // Compute opening
+    commit(&witness_poly, setup)
+}
+
+/// Verification part of polynomial commitment. 
+/// Checks that `eval` is consistent with `commitment`,
+/// which means that Prover was honest about evaluation.
 pub fn verify(
     g1: &G1Affine,
     h: &G2Affine,
@@ -90,8 +117,25 @@ pub fn verify(
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Div;
     use super::*;
     use rand::Rng;
+
+    #[test]
+    fn commitment_success() {
+        let mut rng = rand::thread_rng();
+        let a = vec![Fr::from(1u8), Fr::from(2u8), Fr::from(3u8)];
+        let (setup, h, beta_h, domain) = setup(&a);
+        let poly = interpolate(&a, &domain);
+        let commitment = commit(&poly, &setup);
+        let eval = Fr::rand(&mut rng);
+        let value = evaluate(&poly, &eval);
+        let opening = open(&poly, &eval, &setup);
+        let opening_alternate = open_alternate(&poly, &eval, &setup);
+
+        assert!(verify(&setup[0], &h, &beta_h, &commitment, &eval, &value, &opening));
+        assert!(verify(&setup[0], &h, &beta_h, &commitment, &eval, &value, &opening_alternate))
+    }
 
     #[test]
     fn test_the_thing() {
@@ -103,7 +147,7 @@ mod tests {
             vecs.push(acct_bytes.iter().map(|u| Fr::from(*u)).collect());
         }
 
-        let (setup, h, beta_h, domain) = setup(vecs);
+        let (setup, h, beta_h, domain) = setup(&vecs[0]);
         let poly = interpolate(&vecs[0], &domain);
 
         let commitment = commit(&poly, &setup);
@@ -122,33 +166,33 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn sumcheck() {
-        let mut rng = rand::thread_rng();
-        let num_vecs = 2;
-        let mut vecs: Vec<Vec<Fr>> = vec![];
-        for _ in 0..num_vecs {
-            let acct_bytes: Vec<u8> = (0..32).into_iter().map(|_u| rng.gen::<u8>()).collect();
-            vecs.push(acct_bytes.iter().map(|u| Fr::from(*u)).collect());
-        }
+    // #[test]
+    // fn sumcheck() {
+    //     let mut rng = rand::thread_rng();
+    //     let num_vecs = 2;
+    //     let mut vecs: Vec<Vec<Fr>> = vec![];
+    //     for _ in 0..num_vecs {
+    //         let acct_bytes: Vec<u8> = (0..32).into_iter().map(|_u| rng.gen::<u8>()).collect();
+    //         vecs.push(acct_bytes.iter().map(|u| Fr::from(*u)).collect());
+    //     }
 
-        let a = vecs[0];
-        let b = vecs[1];
-        let c = a
-            .iter()
-            .zip(b.iter())
-            .map(|(one, two)| *one * two)
-            .collect::<Vec<Fr>>();
+    //     let a = vecs[0];
+    //     let b = vecs[1];
+    //     let c = a
+    //         .iter()
+    //         .zip(b.iter())
+    //         .map(|(one, two)| *one * two)
+    //         .collect::<Vec<Fr>>();
 
-        let domain: GeneralEvaluationDomain<Fr> =
-            GeneralEvaluationDomain::new(num_vecs + 3).unwrap();
-        let (setup, h, beta_h) = setup(domain.size());
-        let poly_1 = interpolate(domain.ifft(&a));
-        let poly_2 = interpolate(domain.ifft(&b));
-        let poly_3 = interpolate(domain.ifft(&c));
+    //     // let domain: GeneralEvaluationDomain<Fr> =
+    //     //     GeneralEvaluationDomain::new(num_vecs + 3).unwrap();
+    //     let (setup, h, beta_h, domain) = setup(vec![a, b, c]);
+    //     let poly_1 = interpolate(&a, &domain);
+    //     let poly_2 = interpolate(&b, &domain);
+    //     let poly_3 = interpolate(&c, &domain);
 
-        let q = (poly_1.mul(&poly_2) - poly_3) / domain.vanishing_polynomial();
-    }
+    //     let q = (poly_1.mul(&poly_2) + poly_3.neg()).divide_by_vanishing_poly(domain);
+    // }
 }
 
 /*

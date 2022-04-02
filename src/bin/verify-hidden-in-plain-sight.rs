@@ -44,8 +44,9 @@ fn main() {
     let (setup, accts, cha_1, cha_2, commt, opn_1, opn_2) = read_cha_from_file();
 
     // Replace with the solution polynomial, derived from the account!
-    let solution_blinded_acct = DensePolynomial::from_coefficients_vec(vec![]);
+    // let solution_blinded_acct = DensePolynomial::from_coefficients_vec(vec![]);
 
-    let solution_commitment = commit(&solution_blinded_acct, &setup);
-    assert_eq!(solution_commitment, commt);
+    // let solution_commitment = commit(&solution_blinded_acct, &setup);
+    // assert_eq!(solution_commitment, commt);
+    todo!()
 }
